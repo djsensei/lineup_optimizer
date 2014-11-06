@@ -9,20 +9,23 @@ Next steps: 1) Build a web-scraper to pull stat predictions from various sites.
                 useable csv files (or pandas dfs)
             3) Import scoring systems and salary caps for various DFS sites,
                 integrate into the csv or df creation functionality.
+            3a) Create JSON file containing scoring rules for each desired site.
             4) Backtest against previous weeks? Forwardtest with real money!?
 '''
 import sys
 import pandas as pd
 import numpy as np
 from itertools import combinations
+import scrape_reader as scr
+import points_predictor as pnp
 
 
 class LineupOptimizer(object):
-    def __init__(self, csvfile):
+    def __init__(self, url):
         self.roster_allocation = {'QB': 1, 'RB': 2, 'WR': 3, 'TE': 1, 'K': 1,
-                                 'D': 1}
+                                  'D': 1}
         self.salary_cap = 60000.0
-        self.full_df = pd.read_csv(csvfile)
+        self.full_df = self.scrape_and_compile_df(url)
         self.check = self._prep_position_dfs()
         self.cut_list, self.check_list = self._filter_weak_players()
 
@@ -33,19 +36,18 @@ class LineupOptimizer(object):
         '''
         df_dict = {}
         for pos in self.roster_allocation:
-            df_dict[pos] = self.full_df[self.full_df['position_text']==pos]
+            df_dict[pos] = self.full_df[self.full_df['position']==pos]
         return df_dict
 
     def _filter_weak_players(self):
         '''
         Eliminates individual players who are clearly worse than another player
-            at their position.
-        players_per_position indicates how many players you must roster from
-            this group.
+            at their position. Uses roster_allocation to determine how many
+            superior players must exist to cut a guy.
         '''
         cut_dict = {}
         check_dict = {}
-        for pos in self.check:
+        for pos in self.roster_allocation:
             cut_list = []
             check_list = []
             for i1, r1 in self.check[pos].iterrows():
@@ -111,6 +113,7 @@ class LineupOptimizer(object):
                     continue
                 if c2[1] <= c1[1] and c2[2] > c1[2]:
                     cut = True
+                    break
             if not cut:
                 check_combos.append(c1)
         return check_combos
@@ -157,14 +160,32 @@ class LineupOptimizer(object):
     def print_best_lineups(self, best):
         c = self.full_df.columns
         for i, b in enumerate(best):
-            print 'BEST LINEUP ', i
+            print 'BEST LINEUP #', i, ' -- EXPECTED POINTS: ', b[1]
             bdf = self.full_df.ix[b[0]]
             for _, r in bdf.iterrows():
-                print '   ', r['position_text'], '   ', r[0]
+                print '   ', r['name'].upper(), '\t', r['position'], '\t', \
+                      r['salary'], '\t', r['points']
+
+    def scrape_and_compile_df(self, some_fanduel_contest_url):
+        '''
+        Compiles all of the scrapers and outputs a single df with:
+            name, salary, points, position
+        Which can be plugged into the lineup optimizer (TODO: make it work with df!)
+        '''
+        odf, kdf, ddf = scr.get_numberfire()
+        sal_df = scr.direct_json_scrape_fanduel(some_fanduel_contest_url)
+        osal = odf.merge(sal_df, how='left', on=['name', 'position'])
+        ksal = kdf.merge(sal_df, how='left', on=['name', 'position'])
+        dsal = ddf.merge(sal_df, how='left', on=['name', 'position'])
+        ofinal = pnp.fanduel_offense_points(osal)
+        kfinal = pnp.fanduel_kicker_points(ksal)
+        dfinal = pnp.fanduel_defense_points(dsal)
+        bigdf = pd.concat([kfinal, dfinal, ofinal]).dropna()
+        return bigdf.reset_index()
 
 if __name__=='__main__':
-    file = sys.argv[1]
+    url = sys.argv[1]
     n = int(sys.argv[2])
-    linopt = LineupOptimizer(file)
+    linopt = LineupOptimizer(url)
     bests = linopt.find_optimal_lineups(n)
     linopt.print_best_lineups(bests)
